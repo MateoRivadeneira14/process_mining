@@ -1,44 +1,36 @@
-import pandas as pd
-from pm4py.objects.conversion.log import converter as log_converter
+import pm4py
+from pm4py.objects.log.importer.xes import importer as xes_importer
+from pm4py.algo.filtering.log.variants import variants_filter
 from pm4py.algo.discovery.heuristics import algorithm as heuristics_miner
-from pm4py.visualization.petrinet import visualizer as pn_visualizer
-from pm4py.statistics.variants.log import get as variants_get
+from pm4py.visualization.heuristics_net import visualizer as hn_visualizer
+import os
 
-# 1. Cargar el CSV
-df = pd.read_csv("data/insurance_claims.csv", parse_dates=["incident_date"])
+# Ruta al archivo .xes (con carpeta data)
+xes_file_path = "data/PrepaidTravelCost.xes"
 
-# 2. Renombrar columnas
-df = df.rename(columns={
-    "policy_number": "case:concept:name",
-    "incident_date": "time:timestamp"
-})
+# Carga el log
+log = xes_importer.apply(xes_file_path)
 
-# 3. Crear eventos a partir de incident_type, incident_severity y fraud_reported
-events = df.melt(
-    id_vars=["case:concept:name", "time:timestamp"],
-    value_vars=["incident_type", "incident_severity", "fraud_reported"],
-    var_name="concept:name",
-    value_name="value"
-).dropna(subset=["value"])
+# FILTRO: Opcionalmente eliminar trazas repetitivas o loops simples
+# Esto elimina variantes con menos de X casos (p.ej. 5)
+variants = pm4py.get_variants(log)
+filtered_log = variants_filter.filter_log_variants_percentage(log, 0.8)  # Conserva el 80% más frecuentes
 
-events["concept:name"] = events["concept:name"] + ": " + events["value"]
+# Heuristics Miner con umbral alto
+heu_net = heuristics_miner.apply_heu(
+    filtered_log,
+    parameters={
+        heuristics_miner.Variants.CLASSIC.value.Parameters.DEPENDENCY_THRESH: 0.9,  # Ajusta el umbral (0.9 recomendado)
+        heuristics_miner.Variants.CLASSIC.value.Parameters.MIN_ACT_COUNT: 10  # Ajusta el mínimo de ocurrencias
+    }
+)
 
-# 4. Seleccionar columnas requeridas
-events = events[["case:concept:name", "concept:name", "time:timestamp"]]
+# Visualización
+gviz = hn_visualizer.apply(heu_net)
+hn_visualizer.view(gviz)
 
-# 5. Convertir a log
-log = log_converter.apply(events)
-
-# 6. Aplicar el Heuristics Miner
-net, im, fm = heuristics_miner.apply(log)
-
-# 7. Visualizar el Petri Net
-gviz = pn_visualizer.apply(net, im, fm)
-pn_visualizer.view(gviz)
-
-# 8. Análisis de variantes
-variants = variants_get.get_variants(log)
-top_variants = sorted(variants.items(), key=lambda x: x[1], reverse=True)[:5]
-print("Top 5 variantes:")
-for variant, count in top_variants:
-    print(f" Variante: {variant} → Casos: {count}")
+# Exportar CSV (sobrescribir si existe)
+csv_path = "data/PrepaidTravelCost_filtered.csv"
+df = pm4py.convert_to_dataframe(filtered_log)
+df.to_csv(csv_path, index=False)
+print(f"CSV exportado exitosamente a {csv_path}")
